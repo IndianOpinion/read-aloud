@@ -217,7 +217,9 @@ Statuses of an audio record: `none`, `queued`, `generating`, `capped`,
 25. Classic (non-block) content is handled the same way after `wpautop`
     style paragraph splitting: tags stripped, `<pre>`, `<code>`, `<script>`,
     `<style>`, `<figure>`, `<iframe>`, `<table>` and elements with class
-    `read-aloud-skip` removed with their content.
+    `read-aloud-skip` removed with their content. When the setting that
+    keeps captions is on, the `<figcaption>` text of a removed `<figure>`
+    is kept.
 26. HTML entities are decoded. Tags are stripped. Bare URLs and email
     addresses are removed. Link text is kept.
 27. Headings, paragraphs and list items become separate sentences: each
@@ -466,8 +468,8 @@ Statuses of an audio record: `none`, `queued`, `generating`, `capped`,
     unsettled reservation, and is retried with the transient schedule.
 83. A PHP fatal error or timeout mid-job leaves a lock that expires
     (default 15 minutes); the chunk cache lets the next run resume.
-84. After 3 failed attempts the record is `failed` with the last error
-    code and message. It is retried only by a text change, "Generate now"
+84. When the third retry has also failed (four attempts in all) the record
+    is `failed` with the last error code and message. It is retried only by a text change, "Generate now"
     or the CLI.
 
 ### 4.12 Serving and the player
@@ -893,8 +895,8 @@ interface. Each test names the cases it covers.
    reach the provider, even with setting `on`.
 9. (9, 10) Text under the minimum is `too_short`; over the maximum is
    `too_long` and no call is made; the filter raises the maximum.
-10. (11, 35) A locale with no voice is `no_voice`; `pt-BR` falls back to a
-    `pt` voice.
+10. (11, 34, 35) A locale with no voice is `no_voice`; `pt-BR` falls back to a
+    `pt` voice; the post locale filter overrides the site locale.
 11. (12) Making an approved post ineligible hides the player; making it
     eligible again shows it with no new call.
 
@@ -1065,7 +1067,7 @@ interface. Each test names the cases it covers.
     cache, releases the reservation.
 77. (83) A job killed mid-chunk resumes after the lock expires and sends
     only missing chunks.
-78. (84) After three failures the record is `failed` and a plain save with
+78. (84) After the initial attempt and three failed retries the record is `failed` and a plain save with
     unchanged text does not queue it.
 
 ### 12.12 Player and serving
@@ -1084,7 +1086,9 @@ interface. Each test names the cases it covers.
     call and no extra query beyond post meta.
 86. (92) With the setting, the feed item has an enclosure with URL, length
     and type; without it, none.
-87. (93) Approval calls `clean_post_cache` and fires the purge action.
+87. (93, 94) Approval calls `clean_post_cache` and fires the purge action;
+    the README states that files under the audio directory may be cached
+    for a year.
 
 ### 12.13 Lifecycle and storage
 
