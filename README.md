@@ -145,6 +145,8 @@ composer install
 composer check   # phpcs, phpstan, phpunit
 ```
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+
 ## Licence
 
 MIT. Copyright (c) 2026 Indian Opinion. See [LICENSE](LICENSE).
