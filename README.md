@@ -96,6 +96,10 @@ location ^~ /wp-content/uploads/read-aloud/ {
 
 After approval, rejection or a stale change the plugin calls `clean_post_cache()` and fires `read_aloud_player_changed` with the post id. Hook it to purge your page cache.
 
+With gen-queue active, jobs run through it as type `read-aloud.generate`. gen-queue runs nothing until its own daily cap is set (`wp gen-queue cap <amount>`), so set one, or deactivate gen-queue to stay on WP-Cron. With spend-meter (contract 1) active, every billed call is checked, recorded or released through its hooks; both the meter and this plugin's own caps must allow a call.
+
+The `http` adapter never follows redirects, refuses an endpoint host if any of its addresses is private, loopback, link-local, carrier-grade NAT or otherwise reserved (IPv4 and IPv6), and pins the connection to the address it checked. `read_aloud_allow_local_endpoint` turns that off for a self-hosted engine on your own network.
+
 The chunk cache lives outside the web root when WordPress is installed at the site root (a `read-aloud-chunks` directory beside it). Otherwise it lives in `uploads/read-aloud/.chunks/` with deny files for Apache and IIS; on nginx add `location ^~ /wp-content/uploads/read-aloud/.chunks/ { deny all; }`. If the deny files cannot be written, the chunk cache is turned off.
 
 ## Hooks

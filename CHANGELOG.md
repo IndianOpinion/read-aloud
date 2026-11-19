@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-11-18
+## [0.1.0] - 2026-11-19
 
 ### Added
 
@@ -30,5 +30,8 @@ All notable changes to this project are documented here. The format follows
   buttons, download link and feed enclosure.
 - Block editor panel, classic meta box, posts list column and bulk actions,
   settings and status screens, REST routes and `wp read-aloud` commands.
-- Optional soft integrations with a job queue and a spend meter.
+- Optional soft integrations with gen-queue 0.1.0 and spend-meter (contract 1).
+- Endpoint guard for the `http` adapter: no redirects, every resolved
+  address must be public, and the connection is pinned to the checked
+  address. File and chunk names keyed with a per-site secret.
 - Uninstall that removes options, meta, events, tables and files.

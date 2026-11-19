@@ -96,6 +96,8 @@ open questions (section 13).
   gets a new URL. An existing URL never changes bytes; `UploadsStore::put()`
   refuses different bytes under an existing key. `verify --requeue` and
   backfills reuse cached chunks.
+- **Chunk cache on multisite.** `READ_ALOUD_CHUNK_DIR` and the filter get a
+  `site-<id>` folder per site, because post ids repeat across sites.
 - **Chunk cache layout is per post** (`<dir>/<post id>/<hash>.<ext>`), not the
   PRD's shared `<two hex>/<hash>` layout, so removing a post's audio never
   touches another post's chunks. Retention: a chunk is kept while the record
@@ -114,6 +116,20 @@ open questions (section 13).
   is a space.
 - **`SpeechProvider::isBilled()`** is an addition to the PRD interface: the
   silent adapter returns false so it never counts against the money cap.
+- **Endpoint guard.** The `http` adapter does not follow redirects. Before a
+  call it resolves every A and AAAA record of the endpoint host and refuses
+  the call if any address is private, loopback, link-local (cloud metadata),
+  carrier-grade NAT, documentation, multicast, reserved, IPv6 unique-local or
+  link-local, or IPv4 mapped into one of those. The cURL connection is then
+  pinned to the checked address (`CURLOPT_RESOLVE` through `http_api_curl`),
+  so a second DNS answer cannot redirect it. Responses are capped at 64 MiB.
+  `read_aloud_allow_local_endpoint` turns all of this off for a self-hosted
+  engine.
+- **Keyed file names.** Fingerprints and chunk names are HMAC-SHA-256 with a
+  random per-site secret (a non-autoloaded option created on first use), so
+  nobody who knows the published text and the voice settings can work out
+  the URL of a file that still waits for review. Every audio folder and every
+  per-post chunk folder gets an empty `index.html`.
 - **HTTP status mapping** in the `http` adapter: 401, 402, 403 hold the site;
   429 is rate limited; 408 and 5xx are transient; 400 and 422 are a text
   refusal; other 4xx are configuration errors. `application/octet-stream` is
@@ -122,16 +138,35 @@ open questions (section 13).
   transient once, then permanent.
 - **Cap actions.** `read_aloud_cap_reached` also fires when a reservation is
   refused because it would pass a cap, naming that cap.
-- **Integration contracts** are assumed for 0.1.0, since the job queue and
-  spend meter were not released when this was built. Job queue: the
-  `gen_queue_enqueue_job` filter receives `null` and a job array (`type`,
-  `idempotency_key` = `<post id>:<content hash>`, `payload`, `run_at`,
-  `cost_estimate`) and returns a job id; the plugin registers its handler on
-  `gen_queue_handlers`; `GEN_QUEUE_API`, when defined, must be 1. Spend meter:
-  `SPEND_METER_API` must be 1; `spend_meter_pre_spend` may return `null`
-  (allow), an array with `allow`, `reason` and `reservation_id`, `false` or a
-  `WP_Error` (deny); `spend_meter_record` and `spend_meter_release` receive
-  arrays. An absent or different version is logged once per day.
+- **Integration contracts** follow the released gen-queue 0.1.0 and
+  spend-meter 0.1.0 (contract 1). gen-queue is present when
+  `GEN_QUEUE_VERSION` is defined with major version 0 and the soft filter is
+  hooked. Jobs go through `apply_filters('gen_queue_enqueue_job', null,
+  $type, $payload, $args)` with type `read-aloud.generate` (gen-queue's
+  `<plugin-slug>.<task>` convention; the PRD's `read_aloud_generate` would
+  also be valid, the dotted form was chosen to match the convention), payload
+  `post_id`, `content_hash`, `chars`, and args `idempotency_key`
+  (`<post id>:<content hash>:<run at>`, because gen-queue never requeues a
+  succeeded key and a retry for the same text needs its own run),
+  `run_after`, `cost_estimate` (decimal money from the operator's price, `0`
+  without one), `source` (`read-aloud:<post id>`, so `gen_queue_cancel_where`
+  removes a post's jobs) and `on_conflict` `requeue`. An int result means
+  queued; anything else falls back to WP-Cron. The handler is registered with
+  `gen_queue_register_type()` on `gen_queue_register_types`, with
+  `max_attempts` 1: retries, caps and the kill switch stay in this plugin. A
+  queue job that runs before the record's run time does nothing. gen-queue
+  runs nothing until its own daily cap is set; that is the operator's call.
+  Spend meter: `SPEND_METER_API` must be 1. Before a job the plugin applies
+  `spend_meter_pre_spend` with `null` and an intent (`purpose` and `caller`
+  `read-aloud`, `provider` the adapter id, `model` the model or else the
+  voice id, `est_units` the characters to send). `null` means no meter; a
+  call is made only when `allowed` is exactly `true`. Each call is recorded
+  with one `spend_meter_record` call array (reservation id, provider, model,
+  `units`, status `ok`, `error_billed` or `error_unbilled`, HTTP status,
+  latency, error code); a reservation no call used is given up with
+  `spend_meter_release` and the reservation id string. A provider that bills
+  nothing (`isBilled()` false, the silent adapter) never asks the meter. An
+  absent or different version is logged once per day.
 - **Extra REST route** `POST /posts/<id>/setting` sets the per-post mode for
   the block editor panel. Write routes require the REST nonce (header or
   `_wpnonce`) for every client.
