@@ -33,8 +33,11 @@ interface Ledger
      * Move part of a reservation into used counters after one call.
      * $reservedChars is what this call had reserved; $billedChars what the
      * provider billed (0 for an unbilled failure, which releases the share).
+     * When $now is given the reservation counts as settled at that time, so
+     * the stale-reservation sweep never releases a job that is still
+     * settling chunks.
      */
-    public function settle(string $reservationId, int $reservedChars, int $billedChars, int $reservedMoney, int $billedMoney): void;
+    public function settle(string $reservationId, int $reservedChars, int $billedChars, int $reservedMoney, int $billedMoney, ?int $now = null): void;
 
     /** Count the reserved generation as completed and release whatever is left. */
     public function complete(string $reservationId): void;
@@ -77,6 +80,12 @@ interface Ledger
     public function lock(string $name, string $owner, int $now, int $ttl): string;
 
     public function unlock(string $name, string $owner): void;
+
+    /**
+     * Push the expiry of a lock this owner holds. False when the lock is no
+     * longer this owner's (it expired and another runner took it over).
+     */
+    public function renew(string $name, string $owner, int $now, int $ttl): bool;
 
     /** Create the tables if needed. */
     public function install(): void;

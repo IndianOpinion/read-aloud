@@ -17,6 +17,9 @@ final class Redactor
      */
     public static function clean(string $message, array $secrets = [], int $max = self::MAX): string
     {
+        // Provider bodies may hold invalid UTF-8; the /u patterns below
+        // would then drop the whole message.
+        $message = mb_scrub($message, 'UTF-8');
         foreach ($secrets as $secret) {
             if ($secret !== '' && strlen($secret) >= 4) {
                 $message = str_replace($secret, '[redacted]', $message);

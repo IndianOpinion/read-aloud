@@ -22,6 +22,7 @@ final class Uninstaller
     public const OPTIONS = [
         Settings::OPTION,
         Settings::OPTION_KEY,
+        Settings::OPTION_SECRET,
         Guard::OPTION_ENABLED,
         Guard::OPTION_HOLD,
         EventLog::OPTION,

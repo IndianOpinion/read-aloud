@@ -36,10 +36,14 @@ final class UploadsStore implements AudioStore
         return $this->baseDir;
     }
 
+    /**
+     * Only the two key shapes the plugin writes. `\z` (not `$`) so a
+     * trailing newline never passes; no dot segments can match.
+     */
     public static function validKey(string $key): bool
     {
-        if (preg_match('~^\d{4}/\d{2}/\d+-[0-9a-f]{12}\.([a-z0-9]+)$~', $key, $m) !== 1) {
-            return preg_match('~^test/[0-9a-f]{16}\.([a-z0-9]+)$~', $key, $m) === 1 && AudioFormat::isKnown($m[1]);
+        if (preg_match('~\A\d{4}/\d{2}/\d+-[0-9a-f]{12}\.([a-z0-9]+)\z~', $key, $m) !== 1) {
+            return preg_match('~\Atest/[0-9a-f]{16}\.([a-z0-9]+)\z~', $key, $m) === 1 && AudioFormat::isKnown($m[1]);
         }
 
         return AudioFormat::isKnown($m[1]);
@@ -74,6 +78,7 @@ final class UploadsStore implements AudioStore
         if (!is_dir($directory) && !wp_mkdir_p($directory)) {
             throw new StorageException('The audio directory cannot be created.');
         }
+        $this->guardListings($directory);
         if (!is_writable($directory)) {
             throw new StorageException('The audio directory is not writable.');
         }
@@ -101,6 +106,26 @@ final class UploadsStore implements AudioStore
         $bytes = filesize($target);
 
         return new StoredFile($key, $this->url($key), $bytes === false ? 0 : $bytes);
+    }
+
+    /**
+     * Put an empty index.html in every directory from the base down to
+     * $directory, so a server with directory listings on never lists the
+     * files that still wait for review.
+     */
+    private function guardListings(string $directory): void
+    {
+        $dir = $directory;
+        while (str_starts_with($dir, $this->baseDir)) {
+            $index = $dir . '/index.html';
+            if (!file_exists($index) && is_writable($dir)) {
+                file_put_contents($index, '');
+            }
+            if ($dir === $this->baseDir) {
+                break;
+            }
+            $dir = dirname($dir);
+        }
     }
 
     public function url(string $key): string

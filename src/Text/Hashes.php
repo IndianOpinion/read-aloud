@@ -27,14 +27,25 @@ final class Hashes
         return hash('sha256', (string) json_encode($settings, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION));
     }
 
-    /** First 12 hex characters of SHA-256 of content hash plus render hash. */
-    public static function fingerprint(string $contentHash, string $renderHash): string
+    /**
+     * First 12 hex characters of SHA-256 of content hash plus render hash.
+     *
+     * With a site secret the digest is keyed (HMAC), so nobody who knows the
+     * published text and the voice settings can work out the URL of a file
+     * that still waits for review.
+     */
+    public static function fingerprint(string $contentHash, string $renderHash, string $secret = ''): string
     {
-        return substr(hash('sha256', $contentHash . $renderHash), 0, 12);
+        $data = $contentHash . $renderHash;
+
+        return substr($secret === '' ? hash('sha256', $data) : hash_hmac('sha256', $data, $secret), 0, 12);
     }
 
-    public static function chunk(string $chunkText, string $renderHash): string
+    /** Chunk cache name; keyed with the site secret for the same reason. */
+    public static function chunk(string $chunkText, string $renderHash, string $secret = ''): string
     {
-        return hash('sha256', $renderHash . "\n" . $chunkText);
+        $data = $renderHash . "\n" . $chunkText;
+
+        return $secret === '' ? hash('sha256', $data) : hash_hmac('sha256', $data, $secret);
     }
 }

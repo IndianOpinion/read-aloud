@@ -198,8 +198,7 @@ final class Mp3
             $pending = '';
             $pos = $start;
             $frames = 0;
-            $samples = 0;
-            $sampleRate = 0;
+            $duration = 0.0;
             $first = true;
             $skipped = 0;
             while ($pos + 4 <= $end) {
@@ -229,8 +228,9 @@ final class Mp3
                     }
                 }
                 $frames++;
-                $samples += $header['samples'];
-                $sampleRate = $header['sampleRate'];
+                // Per frame, so a stream that changes sample rate part-way
+                // (two chunks from different settings) still measures right.
+                $duration += $header['samples'] / $header['sampleRate'];
                 if ($out !== null) {
                     $pending .= $frame;
                     if (strlen($pending) >= self::BLOCK) {
@@ -246,7 +246,7 @@ final class Mp3
                 throw new InvalidAudioException('No MPEG audio frames found.');
             }
 
-            return ['frames' => $frames, 'duration' => $sampleRate > 0 ? $samples / $sampleRate : 0.0];
+            return ['frames' => $frames, 'duration' => $duration];
         } finally {
             fclose($in);
         }

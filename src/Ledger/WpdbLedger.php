@@ -174,7 +174,7 @@ final class WpdbLedger implements Ledger
         ];
     }
 
-    public function settle(string $reservationId, int $reservedChars, int $billedChars, int $reservedMoney, int $billedMoney): void
+    public function settle(string $reservationId, int $reservedChars, int $billedChars, int $reservedMoney, int $billedMoney, ?int $now = null): void
     {
         $claim = $this->claim($reservationId);
         if ($claim === null) {
@@ -182,13 +182,26 @@ final class WpdbLedger implements Ledger
         }
         $releaseChars = min($claim['chars'], max(0, $reservedChars));
         $releaseMoney = min($claim['money'], max(0, $reservedMoney));
-        $this->exec(
-            'UPDATE %i SET chars = chars - %d, money = money - %d WHERE id = %s',
+        // Conditional on the claim still holding what is released, so a
+        // concurrent release (stale sweep) and this settle never both take
+        // the same share off the day row.
+        $settled = $this->exec(
+            'UPDATE %i SET chars = chars - %d, money = money - %d, created_at = GREATEST(created_at, %d)'
+            . ' WHERE id = %s AND chars >= %d AND money >= %d',
             $this->claims(),
             $releaseChars,
             $releaseMoney,
-            $reservationId
+            $now ?? 0,
+            $reservationId,
+            $releaseChars,
+            $releaseMoney
         );
+        if ($settled !== 1) {
+            // The claim went away meanwhile: its reservation is already
+            // released, but the call happened, so count what was billed.
+            $releaseChars = 0;
+            $releaseMoney = 0;
+        }
         $this->exec(
             'UPDATE %i SET reserved_chars = reserved_chars - %d, reserved_money = reserved_money - %d,'
             . ' chars = chars + %d, money = money + %d WHERE day = %s',
@@ -334,6 +347,16 @@ final class WpdbLedger implements Ledger
     public function unlock(string $name, string $owner): void
     {
         $this->exec('DELETE FROM %i WHERE name = %s AND owner = %s', $this->locks(), $name, $owner);
+    }
+
+    public function renew(string $name, string $owner, int $now, int $ttl): bool
+    {
+        $this->exec('UPDATE %i SET expires_at = %d WHERE name = %s AND owner = %s', $this->locks(), $now + $ttl, $name, $owner);
+
+        // rows_affected is 0 when the value did not change, so read it back.
+        $held = $this->db->get_col($this->prepare('SELECT owner FROM %i WHERE name = %s', $this->locks(), $name));
+
+        return ($held[0] ?? null) === $owner;
     }
 
     /**

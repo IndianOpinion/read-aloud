@@ -19,14 +19,18 @@ use IndianOpinion\ReadAloud\Support\TempFiles;
  * Generic HTTPS adapter for any speech API that takes a JSON request and
  * returns raw audio bytes, or JSON holding base64 audio.
  *
- * Requests go through the WordPress HTTP API. The safe variant is used, so
- * private and loopback addresses are refused, unless the filter
- * read_aloud_allow_local_endpoint returns true.
+ * Requests go through the WordPress HTTP API. The safe variant is used,
+ * redirects are not followed, every address of the host must be public
+ * (EndpointGuard) and the connection is pinned to the checked address,
+ * unless the filter read_aloud_allow_local_endpoint returns true.
  */
 final class HttpProvider extends AbstractProvider
 {
     public const MODE_BINARY = 'binary';
     public const MODE_JSON = 'json_base64';
+
+    /** Largest response read from the endpoint: 64 MiB. */
+    public const MAX_RESPONSE_BYTES = 67108864;
 
     public const DEFAULT_BODY = '{"input": "{text}", "voice": "{voice}", "model": "{model}", "response_format": "{format}", "speed": "{speed}"}';
 
@@ -150,6 +154,21 @@ final class HttpProvider extends AbstractProvider
         if (!$allowLocal && wp_http_validate_url($endpoint) === false) {
             throw new ProviderConfigException('The endpoint address is refused (private, loopback or invalid).');
         }
+        // Every address of the host must be public, and the connection is
+        // pinned to the address that was checked. Redirects are off, so this
+        // one hop is the only hop.
+        $pin = null;
+        if (!$allowLocal) {
+            $address = EndpointGuard::check($endpoint);
+            $host = strtolower(trim((string) parse_url($endpoint, PHP_URL_HOST), '[]'));
+            $port = (int) (parse_url($endpoint, PHP_URL_PORT) ?? 443);
+            $entry = $host . ':' . $port . ':' . (str_contains($address, ':') ? '[' . $address . ']' : $address);
+            $pin = static function ($handle) use ($entry): void {
+                if ($handle instanceof \CurlHandle && defined('CURLOPT_RESOLVE')) {
+                    curl_setopt($handle, CURLOPT_RESOLVE, [$entry]);
+                }
+            };
+        }
         $template = new JsonTemplate((string) $this->settings['body_template']);
         $body = $template->fill([
             'text' => $request->text,
@@ -167,7 +186,8 @@ final class HttpProvider extends AbstractProvider
         $key = (string) $this->settings['api_key'];
         $headerName = trim((string) $this->settings['auth_header']);
         if ($key !== '' && $headerName !== '') {
-            $headers[$headerName] = str_replace('{key}', $key, (string) $this->settings['auth_template']);
+            // No line breaks in a header value, whatever was pasted.
+            $headers[$headerName] = str_replace(["\r", "\n"], '', str_replace('{key}', $key, (string) $this->settings['auth_template']));
         }
         $tmp = TempFiles::create($request->format);
         $args = [
@@ -178,9 +198,20 @@ final class HttpProvider extends AbstractProvider
             'body' => $body,
             'stream' => true,
             'filename' => $tmp,
+            // A hostile or broken endpoint cannot fill the disk or memory.
+            'limit_response_size' => self::MAX_RESPONSE_BYTES,
             'reject_unsafe_urls' => !$allowLocal,
         ];
-        $response = $allowLocal ? wp_remote_post($endpoint, $args) : wp_safe_remote_post($endpoint, $args);
+        if ($pin !== null) {
+            add_action('http_api_curl', $pin, 10, 1);
+        }
+        try {
+            $response = $allowLocal ? wp_remote_post($endpoint, $args) : wp_safe_remote_post($endpoint, $args);
+        } finally {
+            if ($pin !== null) {
+                remove_action('http_api_curl', $pin, 10);
+            }
+        }
         try {
             return $this->interpret($response, $tmp, $request, $key);
         } catch (\Throwable $e) {
@@ -214,6 +245,10 @@ final class HttpProvider extends AbstractProvider
                 throw new RejectedTextException($message);
             }
             throw new ProviderConfigException($message);
+        }
+        $size = is_file($tmp) ? filesize($tmp) : false;
+        if ($size !== false && $size >= self::MAX_RESPONSE_BYTES) {
+            throw new InvalidAudioException('The response is larger than the 64 MiB limit and was cut off.');
         }
         $contentType = strtolower(self::header($response, 'content-type'));
         $billed = null;

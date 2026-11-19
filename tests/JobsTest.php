@@ -17,6 +17,8 @@ use IndianOpinion\ReadAloud\Tests\Support\FakeProvider;
 final class JobsTest extends TestCase
 {
     /** Test 43 (case 48). */
+    #[\PHPUnit\Framework\Attributes\RunInSeparateProcess]
+    #[\PHPUnit\Framework\Attributes\PreserveGlobalState(false)]
     public function testCronWithoutQueueAndSoftFilterWithQueue(): void
     {
         $post = $this->post();
@@ -24,21 +26,21 @@ final class JobsTest extends TestCase
         $this->assertCount(1, \WpStub::cronFor('read_aloud_job'));
 
         \WpStub::$cron = [];
+        define('GEN_QUEUE_VERSION', '0.1.0');
         $jobs = [];
-        add_filter('gen_queue_enqueue_job', function ($result, array $job) use (&$jobs) {
-            $jobs[] = $job;
-            return 'job-' . count($jobs);
-        }, 10, 2);
+        add_filter('gen_queue_enqueue_job', function ($result, string $type, array $payload, array $args) use (&$jobs) {
+            $jobs[] = ['type' => $type, 'payload' => $payload, 'args' => $args];
+            return count($jobs);
+        }, 10, 4);
+        $this->settings(['price_per_million' => '20']);
         $other = $this->post(['post_title' => 'Other']);
         $this->trigger($other->ID);
         $this->assertCount(1, $jobs);
         $this->assertSame(GenQueue::TYPE, $jobs[0]['type']);
-        $this->assertGreaterThan(0, $jobs[0]['cost_estimate']['units']);
+        $this->assertGreaterThan(0, $jobs[0]['payload']['chars']);
+        $this->assertMatchesRegularExpression('/^\d+(\.\d+)?$/', $jobs[0]['args']['cost_estimate']);
+        $this->assertNotSame('0', $jobs[0]['args']['cost_estimate'], 'with a price the queue gets a money estimate');
         $this->assertSame([], \WpStub::cronFor('read_aloud_job'));
-        $handlers = apply_filters('gen_queue_handlers', []);
-        $this->plugin->register(READ_ALOUD_FILE);
-        $handlers = apply_filters('gen_queue_handlers', []);
-        $this->assertArrayHasKey(GenQueue::TYPE, $handlers);
     }
 
     /** Test 44 (case 49). */

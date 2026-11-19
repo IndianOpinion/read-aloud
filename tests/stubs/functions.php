@@ -31,6 +31,22 @@ function has_action(string $hook): bool
 {
     return has_filter($hook);
 }
+function remove_action(string $hook, callable $callback, int $priority = 10): bool
+{
+    foreach (WpStub::$filters[$hook][$priority] ?? [] as $i => $registered) {
+        if ($registered === $callback) {
+            unset(WpStub::$filters[$hook][$priority][$i]);
+            if (WpStub::$filters[$hook][$priority] === []) {
+                unset(WpStub::$filters[$hook][$priority]);
+            }
+            if (WpStub::$filters[$hook] === []) {
+                unset(WpStub::$filters[$hook]);
+            }
+            return true;
+        }
+    }
+    return false;
+}
 function remove_all_filters(string $hook): void
 {
     unset(WpStub::$filters[$hook]);
@@ -76,7 +92,7 @@ function delete_option(string $name): bool
     unset(WpStub::$options[WpStub::$blog][$name]);
     return true;
 }
-function wp_cache_delete(string $key, string $group = ''): bool
+function wp_cache_delete(int|string $key, string $group = ''): bool
 {
     WpStub::$cacheDeleted[] = $group . ':' . $key;
     return true;

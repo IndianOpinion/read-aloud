@@ -55,7 +55,7 @@ final class MemoryLedger implements Ledger
         return $id;
     }
 
-    public function settle(string $reservationId, int $reservedChars, int $billedChars, int $reservedMoney, int $billedMoney): void
+    public function settle(string $reservationId, int $reservedChars, int $billedChars, int $reservedMoney, int $billedMoney, ?int $now = null): void
     {
         if (!isset($this->claims[$reservationId])) {
             return;
@@ -65,6 +65,9 @@ final class MemoryLedger implements Ledger
         $releaseMoney = min($claim['money'], max(0, $reservedMoney));
         $claim['chars'] -= $releaseChars;
         $claim['money'] -= $releaseMoney;
+        if ($now !== null) {
+            $claim['created_at'] = max((int) ($claim['created_at'] ?? 0), $now);
+        }
         $row = &$this->day($claim['day']);
         $row['reserved_chars'] -= $releaseChars;
         $row['reserved_money'] -= $releaseMoney;
@@ -182,6 +185,16 @@ final class MemoryLedger implements Ledger
         if (isset($this->locks[$name]) && $this->locks[$name]['owner'] === $owner) {
             unset($this->locks[$name]);
         }
+    }
+
+    public function renew(string $name, string $owner, int $now, int $ttl): bool
+    {
+        if (!isset($this->locks[$name]) || $this->locks[$name]['owner'] !== $owner) {
+            return false;
+        }
+        $this->locks[$name]['expires_at'] = $now + $ttl;
+
+        return true;
     }
 
     public function install(): void

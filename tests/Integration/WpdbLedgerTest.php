@@ -97,6 +97,34 @@ final class WpdbLedgerTest extends TestCase
         $this->assertNotNull($ledger->reserve('2026-11-15', 999999, 999999, $caps, true, 1000, 3), 'bypass');
     }
 
+    /** Review fix: a settle refreshes the claim, and a settle that races a release never double-counts. */
+    public function testSettleRefreshesClaimAndSurvivesARelease(): void
+    {
+        $ledger = $this->ledger();
+        $ledger->install();
+        $caps = new Caps(10000, 5);
+        $id = (string) $ledger->reserve('2026-11-15', 900, 0, $caps, false, 1000, 1);
+        $ledger->settle($id, 300, 300, 0, 0, 9000);
+        $this->assertSame(0, $ledger->releaseStale(5000), 'settled at 9000: not stale at 5000');
+
+        $ledger->release($id);
+        $ledger->settle($id, 300, 300, 0, 0, 9100);
+        $usage = $ledger->usage('2026-11-15');
+        $this->assertSame(0, $usage['reserved_chars'], 'never below zero');
+        $this->assertSame(300, $usage['chars']);
+    }
+
+    public function testRenewOnlyByOwner(): void
+    {
+        $ledger = $this->ledger();
+        $ledger->install();
+        $this->assertSame('acquired', $ledger->lock('post-9', str_repeat('a', 32), 1000, 900));
+        $this->assertTrue($ledger->renew('post-9', str_repeat('a', 32), 1800, 900));
+        $this->assertTrue($ledger->renew('post-9', str_repeat('a', 32), 1800, 900), 'unchanged expiry still counts as held');
+        $this->assertSame('busy', $ledger->lock('post-9', str_repeat('b', 32), 2000, 900), 'renewed until 2700');
+        $this->assertFalse($ledger->renew('post-9', str_repeat('b', 32), 2000, 900));
+    }
+
     public function testFlagsCountersTrimAndLocks(): void
     {
         $ledger = $this->ledger();

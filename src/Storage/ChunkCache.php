@@ -60,13 +60,16 @@ final class ChunkCache
         }
         foreach (self::DENY_FILES as $name => $content) {
             $path = $inside . '/' . $name;
-            if (is_file($path)) {
+            // A deny file that exists but says something else (emptied,
+            // edited, replaced by a directory) protects nothing: rewrite it,
+            // or turn the cache off.
+            if (is_file($path) && file_get_contents($path) === $content) {
                 continue;
             }
-            if (file_exists($path) || !is_writable($inside)) {
+            if ((file_exists($path) && !is_file($path)) || !is_writable($inside)) {
                 return new self(null);
             }
-            if (file_put_contents($path, $content) === false || !is_file($path)) {
+            if (file_put_contents($path, $content) === false || file_get_contents($path) !== $content) {
                 return new self(null);
             }
         }
@@ -150,6 +153,10 @@ final class ChunkCache
         if (!is_dir($directory) && !mkdir($directory, 0775, true) && !is_dir($directory)) {
             throw new StorageException('The chunk cache directory cannot be created.');
         }
+        // A server with directory listings on must not list a post's chunks.
+        if (!is_file($directory . '/index.html') && file_put_contents($directory . '/index.html', '') === false) {
+            throw new StorageException('The chunk cache directory cannot be protected.');
+        }
         if (!rename($tmpPath, $path)) {
             if (!copy($tmpPath, $path)) {
                 throw new StorageException('Writing a chunk to the cache failed.');
@@ -194,7 +201,7 @@ final class ChunkCache
         $files = glob($directory . '/*.*');
         foreach ($files === false ? [] : $files as $file) {
             $hash = pathinfo($file, PATHINFO_FILENAME);
-            if (in_array($hash, $keep, true)) {
+            if (basename($file) === 'index.html' || in_array($hash, $keep, true)) {
                 continue;
             }
             $mtime = filemtime($file);
@@ -203,6 +210,10 @@ final class ChunkCache
             }
         }
         $left = glob($directory . '/*');
+        if ($left === [$directory . '/index.html']) {
+            unlink($directory . '/index.html');
+            $left = [];
+        }
         if ($left === [] || $left === false) {
             rmdir($directory);
         }
@@ -222,7 +233,7 @@ final class ChunkCache
         $deleted = 0;
         $files = glob($directory . '/*');
         foreach ($files === false ? [] : $files as $file) {
-            if (is_file($file) && unlink($file)) {
+            if (is_file($file) && unlink($file) && basename($file) !== 'index.html') {
                 $deleted++;
             }
         }

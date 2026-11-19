@@ -120,7 +120,7 @@ final class Queue
             ? $now
             : min($now + 60 * $this->settings->int('debounce_minutes'), $firstAt + 60 * $this->settings->int('max_wait_minutes'));
         if ($job !== null && ($job['target_hash'] ?? '') !== $hash) {
-            $this->dispatcher->cancel($postId, (string) ($job['target_hash'] ?? ''));
+            $this->dispatcher->cancel($postId);
         }
         $record['job'] = [
             'id' => bin2hex(random_bytes(8)),
@@ -186,7 +186,7 @@ final class Queue
     public function dropJob(int $postId, array &$record): void
     {
         if (is_array($record['job'])) {
-            $this->dispatcher->cancel($postId, (string) ($record['job']['target_hash'] ?? ''));
+            $this->dispatcher->cancel($postId);
             $record['job'] = null;
             $record['next_attempt_at'] = 0;
         }

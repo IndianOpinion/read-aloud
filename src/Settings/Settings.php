@@ -17,6 +17,7 @@ final class Settings
 {
     public const OPTION = 'read_aloud_settings';
     public const OPTION_KEY = 'read_aloud_api_key';
+    public const OPTION_SECRET = 'read_aloud_secret';
 
     /** @var array<string, mixed>|null */
     private ?array $cache = null;
@@ -140,6 +141,23 @@ final class Settings
     public function refresh(): void
     {
         $this->cache = null;
+    }
+
+    /**
+     * A random per-site secret, created on first use and never shown. It
+     * keys file and chunk names so they cannot be guessed from public text.
+     */
+    public function secret(): string
+    {
+        $secret = get_option(self::OPTION_SECRET, '');
+        if (is_string($secret) && strlen($secret) >= 32) {
+            return $secret;
+        }
+        add_option(self::OPTION_SECRET, bin2hex(random_bytes(32)), '', false);
+        // Re-read: if two requests raced, both use the value that was stored.
+        $secret = get_option(self::OPTION_SECRET, '');
+
+        return is_string($secret) ? $secret : '';
     }
 
     public function keyFromConstant(): bool
@@ -362,7 +380,7 @@ final class Settings
             $out['skip_blocks'] = array_values(array_unique($blocks));
         }
         if (array_key_exists('lexicon', $raw) && is_string($raw['lexicon'])) {
-            $out['lexicon'] = Lexicon::parse(wp_unslash($raw['lexicon']));
+            $out['lexicon'] = Lexicon::parse($raw['lexicon']);
         }
         if (array_key_exists('voice_map', $raw) && is_string($raw['voice_map'])) {
             [$map, $mapErrors] = self::parseVoiceMap($raw['voice_map']);
@@ -410,8 +428,10 @@ final class Settings
             if ($field['secret']) {
                 continue;
             }
+            // The caller passes unslashed input (the settings screen calls
+            // wp_unslash() once); a second pass would eat backslashes in a
+            // JSON body template.
             $value = isset($fields[$field['key']]) && is_scalar($fields[$field['key']]) ? (string) $fields[$field['key']] : '';
-            $value = wp_unslash($value);
             $clean[$field['key']] = match ($field['type']) {
                 'textarea' => trim(str_replace("\r\n", "\n", $value)),
                 'url' => trim($value),

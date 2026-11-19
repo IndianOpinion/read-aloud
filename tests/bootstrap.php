@@ -18,6 +18,12 @@ require __DIR__ . '/stubs/functions.php';
 require __DIR__ . '/stubs/wp-cli.php';
 require dirname(__DIR__) . '/vendor/autoload.php';
 
+// No DNS in tests: hosts the test marks private resolve to a private
+// address, every other host to a public one.
+\IndianOpinion\ReadAloud\Provider\EndpointGuard::useResolver(
+    static fn (string $host): array => in_array($host, \WpStub::$privateHosts, true) ? ['10.0.0.8'] : (\WpStub::$dns[$host] ?? ['93.184.216.34'])
+);
+
 register_shutdown_function(static function () use ($root): void {
     \IndianOpinion\ReadAloud\Uninstaller::removeTree($root);
 });

@@ -107,14 +107,14 @@ final class LifecycleTest extends TestCase
     {
         $post = $this->approvedPost();
         $dir = $this->plugin->cache()->directory() . '/' . $post->ID;
-        $live = glob($dir . '/*') ?: [];
+        $live = array_diff(glob($dir . '/*') ?: [], [$dir . '/index.html']);
         $this->assertNotEmpty($live);
         $this->replace($post);
-        $all = glob($dir . '/*') ?: [];
+        $all = array_diff(glob($dir . '/*') ?: [], [$dir . '/index.html']);
         $this->assertGreaterThan(count($live), count($all));
         $this->clock->advance(8 * 86400);
         $this->plugin->maintenance()->daily();
-        $kept = glob($dir . '/*') ?: [];
+        $kept = array_diff(glob($dir . '/*') ?: [], [$dir . '/index.html']);
         $this->assertSame(count($this->record($post->ID)->toArray()['chunks']), count($kept));
 
         $this->settings(['chunk_cache' => false]);

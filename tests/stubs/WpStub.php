@@ -34,6 +34,8 @@ final class WpStub
     public static array $httpQueue = [];
     /** @var list<string> Hosts that resolve to private addresses. */
     public static array $privateHosts = [];
+    /** @var array<string, list<string>> Host to addresses for the endpoint guard. */
+    public static array $dns = [];
     public static int $currentUser = 0;
     /** @var array<int, array<string, bool|list<int>>> */
     public static array $caps = [];
@@ -73,6 +75,7 @@ final class WpStub
         self::$http = [];
         self::$httpQueue = [];
         self::$privateHosts = [];
+        self::$dns = [];
         self::$currentUser = 0;
         self::$caps = [];
         self::$transients = [];

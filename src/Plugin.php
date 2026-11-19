@@ -161,6 +161,10 @@ final class Plugin
             $uploadsDir = rtrim((string) $uploads['basedir'], '/') . '/' . UploadsStore::DIR;
             $override = defined('READ_ALOUD_CHUNK_DIR') ? (string) constant('READ_ALOUD_CHUNK_DIR') : null;
             $override = apply_filters('read_aloud_chunk_dir', $override);
+            if (is_string($override) && $override !== '' && is_multisite()) {
+                // Post ids repeat across sites: each site gets its own folder.
+                $override = rtrim($override, '/') . '/site-' . get_current_blog_id();
+            }
             $this->cache = ChunkCache::locate(
                 $this->settings()->bool('chunk_cache'),
                 is_string($override) ? $override : null,
@@ -201,7 +205,7 @@ final class Plugin
 
     public function dispatcher(): Dispatcher
     {
-        return $this->dispatcher ??= new Dispatcher(new GenQueue(), $this->ledger(), $this->days(), $this->log());
+        return $this->dispatcher ??= new Dispatcher(new GenQueue(), $this->ledger(), $this->days(), $this->log(), $this->capPolicy());
     }
 
     public function queue(): Queue
@@ -305,7 +309,7 @@ final class Plugin
         add_action(Runner::SWEEP_HOOK, [$this, 'onSweep']);
         add_action(Maintenance::DAILY_HOOK, [$this, 'onDaily']);
         add_action(Maintenance::OUTDATED_HOOK, [$this, 'onMarkOutdated']);
-        add_filter('gen_queue_handlers', [$this, 'genQueueHandlers']);
+        add_action('gen_queue_register_types', [$this, 'registerQueueType']);
 
         add_filter('the_content', [$this, 'onContent'], 20);
         add_action('rss2_item', [$this, 'onFeedItem']);
@@ -462,20 +466,10 @@ final class Plugin
         $this->maintenance()->markOutdated($offset);
     }
 
-    /**
-     * @param mixed $handlers
-     * @return mixed
-     */
-    public function genQueueHandlers($handlers)
+    /** Register the generation job type with gen-queue when it is active. */
+    public function registerQueueType(): void
     {
-        if (!is_array($handlers)) {
-            return $handlers;
-        }
-        $handlers[GenQueue::TYPE] = function (array $payload): string {
-            return $this->runner()->handle((int) ($payload['post_id'] ?? 0));
-        };
-
-        return $handlers;
+        GenQueue::registerType(fn (int $postId): string => $this->runner()->handle($postId));
     }
 
     /**

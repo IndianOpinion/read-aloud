@@ -101,13 +101,13 @@ final class Generator
             $this->log->add('lock_takeover', $postId, ['lock' => $lockName]);
         }
         try {
-            return $this->runLocked($postId, $deadline);
+            return $this->runLocked($postId, $deadline, $lockName, $owner);
         } finally {
             $this->ledger->unlock($lockName, $owner);
         }
     }
 
-    private function runLocked(int $postId, ?int $deadline): string
+    private function runLocked(int $postId, ?int $deadline, string $lockName, string $owner): string
     {
         $record = $this->records->get($postId);
         $job = is_array($record['job']) ? $record['job'] : null;
@@ -174,10 +174,12 @@ final class Generator
         $fresh = !empty($job['fresh']);
         $hashes = [];
         $missingChars = 0;
+        $reservedChunks = [];
         foreach ($chunks as $i => $chunk) {
-            $hashes[$i] = Hashes::chunk($chunk, $plan->renderHash);
+            $hashes[$i] = Hashes::chunk($chunk, $plan->renderHash, $this->settings->secret());
             if ($fresh || !$this->cache->has($postId, $hashes[$i], $format)) {
                 $missingChars += $provider->countChars($chunk);
+                $reservedChunks[] = $i;
             }
         }
         $caps = $this->capPolicy->caps();
@@ -192,25 +194,30 @@ final class Generator
             return 'skipped';
         }
 
+        $meterModel = $voice['model'] !== '' ? $voice['model'] : $voice['voice'];
         $meterReservation = '';
-        $meterState = $this->meter->state();
+        // A provider that bills nothing (the silent adapter) never asks the
+        // meter: a meter that prices nothing for it would deny every job.
+        $meterState = $provider->isBilled() ? $this->meter->state() : 'unbilled';
         if ($meterState === 'present' && $missingChars > 0) {
-            $decision = $this->meter->preSpend($provider->id(), $voice['model'] !== '' ? $voice['model'] : $voice['voice'], $missingChars);
+            $decision = $this->meter->preSpend($provider->id(), $meterModel, $missingChars);
             if (!$decision['allow']) {
-                return $this->defer($postId, $record, 'meter:' . ($decision['reason'] !== '' ? $decision['reason'] : 'denied'), $target);
+                return $this->defer($postId, $record, 'meter:' . $decision['reason'], $target);
             }
             $meterReservation = $decision['reservation'];
-        } elseif ($meterState !== 'present' && $this->ledger->setFlag($this->days->today(), Ledger::FLAG_LOG_SPEND_METER)) {
+        } elseif ($meterState !== 'present' && $meterState !== 'unbilled' && $this->ledger->setFlag($this->days->today(), Ledger::FLAG_LOG_SPEND_METER)) {
             $this->log->add('integration_absent', 0, ['integration' => 'spend-meter', 'state' => $meterState]);
         }
+        // Exactly one record (a call happened) or one release (no call)
+        // follows a meter reservation; later calls on the same job are
+        // recorded against it as linked rows.
+        $meterRecorded = false;
 
         $billed = $provider->isBilled();
         $day = $this->days->today();
         $reservation = $this->ledger->reserve($day, $missingChars, $billed ? $this->capPolicy->moneyFor($missingChars) : 0, $caps, $overCap, $this->clock->now(), $postId);
         if ($reservation === null) {
-            if ($meterReservation !== '') {
-                $this->meter->release($meterReservation);
-            }
+            $this->meter->release($meterReservation);
             $this->capPolicy->notify($day, ['chars' => $missingChars, 'money' => $billed ? $this->capPolicy->moneyFor($missingChars) : 0]);
             return $this->defer($postId, $record, 'cap', $target);
         }
@@ -235,10 +242,15 @@ final class Generator
                     $this->log->add('chunk_reused', $postId, ['chunk' => $i + 1]);
                     continue;
                 }
-                $stop = $this->stopReason($postId, $jobId, $deadline);
+                $stop = $this->stopReason($postId, $jobId, $deadline, $lockName, $owner);
+                if ($stop === null && !$fresh && !in_array($i, $reservedChunks, true)) {
+                    // A cached chunk vanished after the reservation was made:
+                    // sending it would spend characters nobody reserved.
+                    $stop = 'cache_changed';
+                }
                 if ($stop !== null) {
                     $this->ledger->release($reservation);
-                    if ($meterReservation !== '') {
+                    if (!$meterRecorded) {
                         $this->meter->release($meterReservation);
                     }
                     return $this->stop($postId, $stop);
@@ -258,12 +270,14 @@ final class Generator
                 try {
                     $audio = $provider->synthesize($request);
                 } catch (ReadAloudException $e) {
-                    $this->settleFailure($reservation, $chars, $meterReservation, $e, $started);
-                    $meterReservation = '';
+                    $this->settleFailure($reservation, $chars, $billed, $e, $started, $meterState, $meterReservation, $provider->id(), $meterModel);
+                    $meterRecorded = true;
                     throw $e;
                 } catch (\Throwable $e) {
-                    $this->ledger->settle($reservation, $chars, 0, $this->capPolicy->moneyFor($chars), 0);
-                    throw new UnexpectedProviderError(Redactor::clean(get_class($e) . ': ' . $e->getMessage(), [$this->settings->apiKey()]), 0, $e);
+                    $wrapped = new UnexpectedProviderError(Redactor::clean(get_class($e) . ': ' . $e->getMessage(), [$this->settings->apiKey()]), 0, $e);
+                    $this->settleFailure($reservation, $chars, $billed, $wrapped, $started, $meterState, $meterReservation, $provider->id(), $meterModel);
+                    $meterRecorded = true;
+                    throw $wrapped;
                 }
                 $temps[] = $audio->path;
                 try {
@@ -272,8 +286,8 @@ final class Generator
                     }
                     AudioFormat::validateFile($audio->path, $format, $chars);
                 } catch (InvalidAudioException $e) {
-                    $this->settleFailure($reservation, $chars, $meterReservation, $e, $started);
-                    $meterReservation = '';
+                    $this->settleFailure($reservation, $chars, $billed, $e, $started, $meterState, $meterReservation, $provider->id(), $meterModel, $audio->billedChars ?? $chars);
+                    $meterRecorded = true;
                     throw $e;
                 }
                 $billedChars = $audio->billedChars ?? $chars;
@@ -283,11 +297,13 @@ final class Generator
                     $chars,
                     $billedChars,
                     $billed ? $this->capPolicy->moneyFor($chars) : 0,
-                    $billed ? $this->capPolicy->moneyFor($billedChars) : 0
+                    $billed ? $this->capPolicy->moneyFor($billedChars) : 0,
+                    $this->clock->now()
                 );
                 $latency = (int) round((microtime(true) - $started) * 1000);
-                if ($meterReservation !== '') {
-                    $this->meter->record($meterReservation, $billedChars, 'ok', 200, $latency);
+                if ($meterState === 'present') {
+                    $this->meter->record($meterReservation, $provider->id(), $meterModel, $billedChars, 'ok', 200, $latency);
+                    $meterRecorded = true;
                 }
                 $this->log->add('chunk_sent', $postId, ['chunk' => $i + 1, 'chars' => $billedChars, 'latency_ms' => $latency, 'http' => 200]);
                 if ($audio->durationSeconds !== null && $audio->durationSeconds > 0) {
@@ -308,12 +324,12 @@ final class Generator
             $measured = $this->joiner->join(array_values($paths), $format, $joined, null, $provider->canJoin($format));
             $duration = $allDurations && $providerDuration > 0 ? $providerDuration : $measured;
             // A fresh run of unchanged text gets its own URL: bytes behind a URL never change.
-            $fingerprint = Hashes::fingerprint($target, $plan->renderHash . ($fresh ? $jobId : ''));
+            $fingerprint = Hashes::fingerprint($target, $plan->renderHash . ($fresh ? $jobId : ''), $this->settings->secret());
             $key = self::fileKey($post, $fingerprint, $format);
             $stored = $this->store->put($joined, $key, AudioFormat::mime($format));
         } catch (ReadAloudException $e) {
             $this->ledger->release($reservation);
-            if ($meterReservation !== '') {
+            if (!$meterRecorded) {
                 $this->meter->release($meterReservation);
             }
             return $this->fail($postId, $this->records->get($postId), $target, $e->errorCode(), $e->getMessage(), $provider, $e);
@@ -384,7 +400,7 @@ final class Generator
         return $prefix . '/' . (int) $post->ID . '-' . $fingerprint . '.' . $format;
     }
 
-    private function stopReason(int $postId, string $jobId, ?int $deadline): ?string
+    private function stopReason(int $postId, string $jobId, ?int $deadline, string $lockName, string $owner): ?string
     {
         if (!$this->guard->enabled()) {
             return 'stopped_kill';
@@ -394,6 +410,22 @@ final class Generator
         }
         if ($deadline !== null && $this->clock->now() >= $deadline) {
             return 'stopped_time';
+        }
+        // A long run (the CLI has no time budget by default) keeps its post
+        // lock alive; a run that lost it stops, so two runners never send
+        // the same post.
+        if (!$this->ledger->renew($lockName, $owner, $this->clock->now(), self::LOCK_TTL)) {
+            return 'locked';
+        }
+        // Read the post and the record past the per-request cache: an
+        // editor may have unpublished the post, opted it out or cancelled
+        // the job since this run started, and no unpublished text may
+        // reach the provider.
+        wp_cache_delete($postId, 'posts');
+        wp_cache_delete($postId, 'post_meta');
+        $post = get_post($postId);
+        if (!$post instanceof \WP_Post || !$this->planner->base($post)['eligible']) {
+            return 'cancelled';
         }
         $job = $this->records->get($postId)['job'];
         if (!is_array($job) || (string) ($job['id'] ?? '') !== $jobId) {
@@ -405,6 +437,11 @@ final class Generator
 
     private function stop(int $postId, string $why): string
     {
+        if ($why === 'locked') {
+            // Another runner owns the post now; its record is not ours to write.
+            $this->log->add('stopped', $postId, ['why' => $why]);
+            return $why;
+        }
         $record = $this->records->get($postId);
         $record['reservation'] = '';
         if (is_array($record['job'])) {
@@ -412,7 +449,7 @@ final class Generator
             $record['job']['run_at'] = $this->clock->now();
             $record['next_attempt_at'] = $this->clock->now();
             $this->records->save($postId, $record);
-            if ($why === 'stopped_time') {
+            if ($why === 'stopped_time' || $why === 'cache_changed') {
                 $this->dispatcher->dispatch($postId, (string) $record['job']['target_hash'], $this->clock->now(), 0);
             }
         } else {
@@ -424,14 +461,52 @@ final class Generator
         return $why;
     }
 
-    private function settleFailure(string $reservation, int $chars, string $meterReservation, ReadAloudException $e, float $started): void
-    {
-        // A failed call the provider did not bill releases its share.
-        $this->ledger->settle($reservation, $chars, 0, $this->capPolicy->moneyFor($chars), 0);
-        if ($meterReservation !== '') {
-            $status = $e instanceof TransientProviderException ? $e->httpStatus() : ($e instanceof AccountException ? $e->httpStatus() : 0);
-            $this->meter->record($meterReservation, 0, $e->errorCode(), $status, (int) round((microtime(true) - $started) * 1000));
-            $this->meter->release($meterReservation);
+    /**
+     * Settle the ledger and the meter after a failed call.
+     *
+     * Invalid audio came back with a 200, so the provider billed it: it
+     * counts as spent. Every other failure is treated as unbilled and
+     * releases its share.
+     */
+    private function settleFailure(
+        string $reservation,
+        int $chars,
+        bool $billed,
+        ReadAloudException $e,
+        float $started,
+        string $meterState,
+        string $meterReservation,
+        string $providerId,
+        string $meterModel,
+        int $billedChars = 0
+    ): void {
+        $wasBilled = $e instanceof InvalidAudioException;
+        $spent = $wasBilled ? max(0, $billedChars) : 0;
+        $this->ledger->settle(
+            $reservation,
+            $chars,
+            $spent,
+            $billed ? $this->capPolicy->moneyFor($chars) : 0,
+            $billed ? $this->capPolicy->moneyFor($spent) : 0,
+            $this->clock->now()
+        );
+        if ($meterState === 'present') {
+            $status = 0;
+            if ($e instanceof TransientProviderException || $e instanceof AccountException) {
+                $status = $e->httpStatus();
+            } elseif ($wasBilled) {
+                $status = 200;
+            }
+            $this->meter->record(
+                $meterReservation,
+                $providerId,
+                $meterModel,
+                $spent,
+                $wasBilled ? 'error_billed' : 'error_unbilled',
+                $status,
+                (int) round((microtime(true) - $started) * 1000),
+                $e->errorCode()
+            );
         }
     }
 
@@ -552,18 +627,47 @@ final class Generator
         $chars = $provider->countChars(self::TEST_TEXT);
         $day = $this->days->today();
         $money = $provider->isBilled() ? $this->capPolicy->moneyFor($chars) : 0;
+        $meterModel = $voice['model'] !== '' ? $voice['model'] : $voice['voice'];
+        $meterState = $provider->isBilled() ? $this->meter->state() : 'unbilled';
+        $meterReservation = '';
+        if ($meterState === 'present') {
+            $decision = $this->meter->preSpend($provider->id(), $meterModel, $chars);
+            if (!$decision['allow']) {
+                return ['ok' => false, 'code' => 'meter', 'message' => 'The spend meter refused the call (' . $decision['reason'] . ').', 'url' => ''];
+            }
+            $meterReservation = $decision['reservation'];
+        }
         $reservation = $this->ledger->reserve($day, $chars, $money, $this->capPolicy->caps(), false, $this->clock->now(), 0);
         if ($reservation === null) {
+            $this->meter->release($meterReservation);
             $this->capPolicy->notify($day, ['chars' => $chars, 'money' => $money]);
             return ['ok' => false, 'code' => 'capped', 'message' => 'A daily cap is reached.', 'url' => ''];
         }
         $path = null;
+        $started = microtime(true);
+        $settled = false;
         try {
-            $audio = $provider->synthesize(new SpeechRequest(self::TEST_TEXT, $voice['voice'], $voice['model'], $voice['locale'], $voice['format'], $voice['speed'], SpeechRequest::newRequestId(), $this->settings->int('request_timeout')));
+            try {
+                $audio = $provider->synthesize(new SpeechRequest(self::TEST_TEXT, $voice['voice'], $voice['model'], $voice['locale'], $voice['format'], $voice['speed'], SpeechRequest::newRequestId(), $this->settings->int('request_timeout')));
+            } catch (ReadAloudException $e) {
+                throw $e;
+            } catch (\Throwable $e) {
+                throw new UnexpectedProviderError(Redactor::clean(get_class($e) . ': ' . $e->getMessage(), [$this->settings->apiKey()]), 0, $e);
+            }
             $path = $audio->path;
-            AudioFormat::validateFile($audio->path, $voice['format'], $chars);
+            try {
+                AudioFormat::validateFile($audio->path, $voice['format'], $chars);
+            } catch (InvalidAudioException $e) {
+                $this->settleFailure($reservation, $chars, $provider->isBilled(), $e, $started, $meterState, $meterReservation, $provider->id(), $meterModel, $audio->billedChars ?? $chars);
+                $settled = true;
+                throw $e;
+            }
             $billedChars = $audio->billedChars ?? $chars;
-            $this->ledger->settle($reservation, $chars, $billedChars, $money, $provider->isBilled() ? $this->capPolicy->moneyFor($billedChars) : 0);
+            $this->ledger->settle($reservation, $chars, $billedChars, $money, $provider->isBilled() ? $this->capPolicy->moneyFor($billedChars) : 0, $this->clock->now());
+            if ($meterState === 'present') {
+                $this->meter->record($meterReservation, $provider->id(), $meterModel, $billedChars, 'ok', 200, (int) round((microtime(true) - $started) * 1000));
+            }
+            $settled = true;
             $this->ledger->complete($reservation);
             $stored = $this->store->put($audio->path, 'test/' . bin2hex(random_bytes(8)) . '.' . $voice['format'], AudioFormat::mime($voice['format']));
             $this->guard->clearHold('test voice');
@@ -572,7 +676,9 @@ final class Generator
 
             return ['ok' => true, 'code' => 'ok', 'message' => '', 'url' => $stored->url];
         } catch (ReadAloudException $e) {
-            $this->ledger->settle($reservation, $chars, 0, $money, 0);
+            if (!$settled) {
+                $this->settleFailure($reservation, $chars, $provider->isBilled(), $e, $started, $meterState, $meterReservation, $provider->id(), $meterModel);
+            }
             $this->ledger->release($reservation);
             if ($e instanceof AccountException) {
                 $this->guard->setHold($provider->id(), $e->errorCode(), Redactor::clean($e->getMessage(), [$this->settings->apiKey()]));

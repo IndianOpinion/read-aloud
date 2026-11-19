@@ -71,6 +71,16 @@ final class Runner
     /** WP-Cron and job-queue entry point for one post. */
     public function handle(int $postId): string
     {
+        $record = $this->records->get($postId);
+        if (!is_array($record['job'])) {
+            return 'nothing';
+        }
+        // A debounced save or a retry moved the run time on; the event or
+        // queue job for that later time runs it. A minute of slack covers
+        // clock skew between the queue and the site.
+        if ((int) ($record['job']['run_at'] ?? 0) > $this->clock->now() + 60) {
+            return 'not_due';
+        }
         $outcome = $this->runOne($postId, $this->clock->now() + Generator::defaultBudget());
         if ($outcome === 'busy') {
             $record = $this->records->get($postId);
