@@ -1160,6 +1160,40 @@ The builder answers each in `docs/ARCHITECTURE.md`.
 9. Whether the feed enclosure should use the approved file only, or skip
    posts whose audio is `outdated_settings`.
 
+### Rulings for 0.1.0
+
+The owner's rulings on the questions above and on the builder's decisions,
+recorded at the code review of 0.1.0. Where a ruling differs from the text
+of sections 4 to 12, the ruling wins; `docs/ARCHITECTURE.md` has the detail.
+
+1. Atomic reservations live in a small custom table, changed by single
+   conditional `UPDATE` statements; no object cache is involved.
+2. The per-post record stays in post meta, with small mirror entries for
+   counts and due jobs.
+3. Only the generic `http` adapter and the `silent` adapter ship. No named
+   presets.
+4. No audio preview for drafts. Unpublished text is never sent, and a job
+   re-reads the post before every chunk and stops if it is no longer
+   eligible.
+5. No automatic approval, now or as a setting.
+6. Duration is the provider's figure when every chunk reported one, with a
+   frame scan (mp3) or header read (wav) of the joined file as fallback.
+7. The chunk cache lives outside the web root where the install allows it;
+   otherwise under uploads with deny files, and if those cannot be written
+   the chunk cache is off (fail closed). Chunk and file names are keyed with
+   a per-site secret so they cannot be guessed.
+8. The cap day follows the site's time zone (`wp_timezone()`), not UTC.
+   Capped work moves to 00:05 local time the next day.
+9. The feed enclosure skips posts marked `outdated_settings` and stale
+   files.
+10. "Generate now" (and `generate --force`) makes a fresh file: cached chunks
+    are not reused and the new file gets its own URL.
+11. The chunk cache is laid out per post (`<dir>/<post id>/<hash>.<ext>`), so
+    removing one post's audio never touches another post's chunks.
+12. Adapters declare `isBilled()`. An adapter that bills nothing (the silent
+    adapter) never counts against the money cap and never asks a spend
+    meter.
+
 ## 14. Lessons from production, written as rules
 
 There is no production history for this exact feature; these rules come
